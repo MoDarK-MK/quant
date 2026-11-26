@@ -10,17 +10,17 @@ deterministic backtesting and latency/audit monitoring.
 
 ```
 src/trading_engine/
-  core/             event bus + typed event envelope
-  domain/           instruments, quotes, intents, order state machine
-  market_data/      backbone + deterministic CSV replay
+  core/           event bus + typed event envelope
+  domain/         instruments, quotes, intents, order state machine
+  market_data/    backbone + deterministic CSV replay
   data_validation/  integrity checks, quarantine, quality report
-  analytics/        causal feature engine + alpha synthesizer
-  strategy/         strategy interface + momentum strategy
-  risk/             sizing + pre-trade checks (drawdown, exposure, stale data)
-  oms/              persistent OMS, idempotency, reconciliation
-  execution/        paper broker + kill switch
-  backtest/         event-driven backtester with Sharpe / drawdown metrics
-  monitoring/       latency percentiles + audit trail
+  analytics/      causal feature engine + alpha synthesizer
+  strategy/       strategy interface + momentum strategy
+  risk/           sizing + pre-trade checks (drawdown, exposure, stale data)
+  oms/            persistent OMS, idempotency, reconciliation
+  execution/      paper broker + kill switch
+  backtest/       event-driven backtester with Sharpe / drawdown metrics
+  monitoring/     latency percentiles + audit trail
 ```
 
 ## Run tests
@@ -28,6 +28,12 @@ src/trading_engine/
 ```
 pip install -e ".[dev]"
 pytest
+```
+
+## Demo
+
+```
+python -m trading_engine.demo
 ```
 
 Determinism note: the bus dispatches subscribers in registration order and
