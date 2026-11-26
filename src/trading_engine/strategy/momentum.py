@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from decimal import Decimal
 
 from ..analytics.features import FeatureSet
 from ..domain.models import Side, TradeIntent
@@ -19,7 +18,10 @@ class Strategy(ABC):
 
 
 class MomentumStrategy(Strategy):
-    """Enter when the short-window momentum exceeds a threshold."""
+    """Enter when the short-window momentum exceeds a threshold.
+
+    Confidence grows with signal strength; stop/TP are ATR-proxy scaled.
+    """
 
     def __init__(self, threshold: float = 0.0015, stop_pct: float = 0.002,
                  target_pct: float = 0.004) -> None:
@@ -29,7 +31,7 @@ class MomentumStrategy(Strategy):
         self.last_direction: Side | None = None
 
     @property
-    def strategy_id(self) -> str:
+    def strategy_id(self) -> str:  # noqa: D102
         return "momentum"
 
     def on_features(self, fs: FeatureSet) -> TradeIntent | None:
@@ -37,6 +39,7 @@ class MomentumStrategy(Strategy):
         if abs(mom) < self.threshold:
             return None
         direction = Side.BUY if mom > 0 else Side.SELL
+        # avoid firing the same direction repeatedly without a flip
         if direction is self.last_direction:
             return None
         self.last_direction = direction
@@ -50,9 +53,9 @@ class MomentumStrategy(Strategy):
         return TradeIntent(
             symbol=fs.symbol,
             direction=direction,
-            entry_ref=Decimal(str(entry)),
-            stop_loss=Decimal(str(round(sl, 8))),
-            take_profit=Decimal(str(round(tp, 8))),
+            entry_ref=__import__("decimal").Decimal(str(entry)),
+            stop_loss=__import__("decimal").Decimal(str(round(sl, 8))),
+            take_profit=__import__("decimal").Decimal(str(round(tp, 8))),
             strategy_id=self.strategy_id,
             strategy_version=self.version,
             confidence=round(conf, 4),
