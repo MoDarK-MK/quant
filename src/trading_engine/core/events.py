@@ -1,4 +1,9 @@
-"""Typed event schemas."""
+Typed event schemas.
+
+Every event carries a unique identifier, an event timestamp, an ingestion
+timestamp, a source identifier and a schema version. Correlation identifiers
+are attached where an event is derived from another event.
+'''
 
 from __future__ import annotations
 
@@ -10,10 +15,12 @@ from typing import Any
 
 
 def utc_now() -> float:
+    """Current UTC time as a unix timestamp (seconds)."""
     return time.time()
 
 
 def monotonic_now() -> float:
+    """Monotonic clock reading for latency measurement."""
     return time.monotonic()
 
 
@@ -37,6 +44,8 @@ class EventType(str, Enum):
 
 @dataclass(frozen=True)
 class Event:
+    """Base event envelope."""
+
     event_type: EventType
     payload: dict[str, Any]
     event_id: str = field(default_factory=new_id)
@@ -53,7 +62,12 @@ class Event:
 
 
 class EventBus:
-    """In-process synchronous bus; deterministic subscriber order."""
+    """In-process synchronous event bus.
+
+    Local-development backbone. Subscribers are per-event-type callbacks.
+    The bus is deterministic: subscribers are invoked in registration order,
+    which makes backtests reproducible.
+    """
 
     def __init__(self) -> None:
         self._subscribers: dict[EventType, list] = {}
