@@ -1,24 +1,25 @@
-from dataclasses import dataclass
+"""Portfolio sizing and pre-trade risk engine (Module 05)."""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field
 from decimal import Decimal
-from typing import Optional
 
-from src.trading_engine.broker.broker import Account
-from src.trading_engine.data.data_feed import Instrument
-from src.trading_engine.orders.order import OrderQuantity, OrderIntent, Intent
+from ..domain.models import Account, Instrument, Side, TradeIntent
 
 
-@dataclass(frozen=True)
+@dataclass
 class RiskLimits:
-    max_risk_per_trade_pct: Decimal = Decimal('0.01')
-    max_daily_loss_pct: Decimal = Decimal('0.03')
-    max_account_drawdown_pct: Decimal = Decimal('0.10')
-    max_position_notional_pct: Decimal = Decimal('0.20')
+    max_risk_per_trade_pct: float = 0.01
+    max_daily_loss_pct: float = 0.03
+    max_account_drawdown_pct: float = 0.10
+    max_position_notional_pct: float = 0.20
     max_open_positions: int = 10
-    max_portfolio_exposure_pct: Decimal = Decimal('1.0')
-    max_leverage: Decimal = Decimal('10')
+    max_portfolio_exposure_pct: float = 1.0
+    max_leverage: Decimal = Decimal(10)
 
 
-@dataclass(frozen=True)
+@dataclass
 class RiskDecision:
     approved: bool
     reason: str = ""
@@ -26,82 +27,57 @@ class RiskDecision:
 
 @dataclass
 class RiskEngine:
-    limits: RiskLimits
-    equity_peak: Decimal = Decimal('1e18')  # Sentinel for unset
-    start_of_day_equity: Decimal = Decimal('1e18')  # Sentinel for unset
+    limits: RiskLimits = field(default_factory=RiskLimits)
+    equity_peak: Decimal = field(default_factory=lambda: Decimal(0))
+    start_of_day_equity: Decimal = field(default_factory=lambda: Decimal(0))
 
-    def __post_init__(self):
-        # Initialize equity_peak and start_of_day_equity if they are at their sentinel value
-        # This assumes that these values will be set from actual account equity at some point.
-        # For initial setup, they might be left as sentinel.
-        pass
+    def __post_init__(self) -> None:
+        if self.equity_peak == 0:
+            self.equity_peak = Decimal("1e18")  # effectively unset
+        if self.start_of_day_equity == 0:
+            self.start_of_day_equity = Decimal("1e18")  # unset
 
-    def size_position(self, account: Account, intent: OrderIntent, instrument: Instrument) -> OrderQuantity:
-        if intent.stop_distance <= Decimal('0'):
-            return OrderQuantity(0)
+    def size_position(self, account: Account, intent: TradeIntent,
+                      instrument: Instrument) -> Decimal:
+        """Fixed-fractional, volatility-aware sizing in contract quantity."""
+        equity = account.equity
+        risk_amount = equity * Decimal(str(self.limits.max_risk_per_trade_pct))
+        stop_distance = abs(intent.entry_ref - intent.stop_loss)
+        if stop_distance <= 0:
+            return Decimal(0)
+        qty = (risk_amount / stop_distance).quantize(Decimal("0.0001"))
+        # concentration cap
+        max_notional = equity * Decimal(str(self.limits.max_position_notional_pct))
+        if intent.entry_ref * qty > max_notional:
+            qty = (max_notional / intent.entry_ref).quantize(Decimal("0.0001"))
+        # confidence scaling (conservative)
+        qty *= Decimal(str(intent.confidence))
+        return max(Decimal(0), qty)
 
-        equity = account.get_current_equity()
-        if equity <= Decimal('0'):
-            return OrderQuantity(0)
-
-        risk_amount = equity * self.limits.max_risk_per_trade_pct
-        qty_unquantized = risk_amount / intent.stop_distance
-
-        # Quantize to 0.0001 (assuming this is the minimum order size increment)
-        qty_quantized = (qty_unquantized // Decimal('0.0001')) * Decimal('0.0001')
-
-        # Cap by max_position_notional_pct
-        if instrument.current_price and instrument.current_price > Decimal('0'):
-            max_position_notional = equity * self.limits.max_position_notional_pct
-            max_qty_by_notional = max_position_notional / instrument.current_price
-            qty_quantized = min(qty_quantized, max_qty_by_notional)
-
-        # Scale by confidence (assuming intent has a confidence attribute)
-        # Assuming confidence is a Decimal between 0 and 1
-        qty_scaled = qty_quantized * intent.confidence if hasattr(intent, 'confidence') else qty_quantized
-
-        # Floor at zero
-        final_qty = max(qty_scaled, Decimal('0'))
-        return OrderQuantity(final_qty)
-
-    def pre_trade_check(self, account: Account, intent: OrderIntent, qty: OrderQuantity, market_fresh: bool = True) -> RiskDecision:
-        current_equity = account.get_current_equity()
-
-        # Check for positive quantity
-        if qty.value <= Decimal('0'):
-            return RiskDecision(approved=False, reason="Order quantity must be positive.")
-
-        # Check market data freshness
+    def pre_trade_check(self, account: Account, intent: TradeIntent,
+                        qty: Decimal, market_fresh: bool = True) -> RiskDecision:
+        equity = account.equity
+        # drawdown guard: only enforced once a peak has been recorded
+        if self.equity_peak < Decimal("1e17") and self.equity_peak > 0:
+            dd = (self.equity_peak - equity) / self.equity_peak
+            if dd > Decimal(str(self.limits.max_account_drawdown_pct)):
+                return RiskDecision(False, f"account drawdown {dd:.2%} exceeds limit")
+        daily_loss = Decimal(0)
+        if self.start_of_day_equity < Decimal("1e17") and self.start_of_day_equity > 0:
+            daily_loss = (self.start_of_day_equity - equity) / self.start_of_day_equity
+        if daily_loss > Decimal(str(self.limits.max_daily_loss_pct)):
+            return RiskDecision(False, f"daily loss {daily_loss:.2%} exceeds limit")
         if not market_fresh:
-            return RiskDecision(approved=False, reason="Market data is not fresh.")
-
-        # Check daily loss
-        if self.start_of_day_equity < Decimal('1e17'):  # Check if start_of_day_equity has been set
-            daily_loss = self.start_of_day_equity - current_equity
-            if daily_loss / self.start_of_day_equity > self.limits.max_daily_loss_pct:
-                return RiskDecision(approved=False, reason="Daily loss limit exceeded.")
-
-        # Check account drawdown
-        if self.equity_peak < Decimal('1e17'):  # Check if equity_peak has been set
-            if current_equity < self.equity_peak:
-                drawdown = self.equity_peak - current_equity
-                if drawdown / self.equity_peak > self.limits.max_account_drawdown_pct:
-                    return RiskDecision(approved=False, reason="Account drawdown limit exceeded.")
-        
-        # Check max open positions
-        # This requires `account` to have a method to get open positions or similar.
-        # Assuming `account.get_open_positions_count()` exists.
-        if hasattr(account, 'get_open_positions_count') and account.get_open_positions_count() >= self.limits.max_open_positions:
-            return RiskDecision(approved=False, reason="Maximum open positions limit exceeded.")
-
-        # Check portfolio exposure
-        # This requires `account` to have a method to get current exposure or similar.
-        # Assuming `account.get_current_portfolio_exposure()` exists.
-        if hasattr(account, 'get_current_portfolio_exposure'):
-            proposed_exposure = account.get_current_portfolio_exposure() + (intent.instrument.current_price * qty.value) # Simplified calculation
-            if proposed_exposure / current_equity > self.limits.max_portfolio_exposure_pct:
-                return RiskDecision(approved=False, reason="Portfolio exposure limit exceeded.")
-
-        # If all checks pass
-        return RiskDecision(approved=True, reason="Risk checks passed.")
-
+            return RiskDecision(False, "market data is stale")
+        if len(account.positions) >= self.limits.max_open_positions:
+            return RiskDecision(False, "max open positions reached")
+        exposure = sum(p.quantity * p.entry_price for p in account.positions.values())
+        new_notional = qty * intent.entry_ref
+        if intent.direction is Side.SELL:
+            new_notional = -new_notional
+        total_exposure = abs(exposure + new_notional)
+        if total_exposure > equity * Decimal(str(self.limits.max_portfolio_exposure_pct)):
+            return RiskDecision(False, "portfolio exposure limit exceeded")
+        if qty <= 0:
+            return RiskDecision(False, "non-positive quantity")
+        return RiskDecision(True, "ok")
