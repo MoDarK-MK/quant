@@ -24,10 +24,13 @@ if errorlevel 1 (
 echo [2/3] Installing dependencies (first run only)...
 %PYTHON% -m pip install -e ".[dev]" --quiet
 if errorlevel 1 (
-    echo ERROR: dependency installation failed.
-    pause
-    exit /b 1
+    echo WARNING: pip install failed - continuing with the bundled source in src\.
+    echo          Third-party dependencies (pytest etc.) may be missing.
 )
+
+REM Run from the source tree itself, so a broken or stale pip install
+REM can never shadow the code shipped in this folder.
+set "PYTHONPATH=%~dp0src;%PYTHONPATH%"
 
 if /i "%~1"=="test" (
     echo [3/3] Running the test suite...
